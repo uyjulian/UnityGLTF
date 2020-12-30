@@ -75,9 +75,15 @@ namespace UnityGLTF
 		{
 			public Mesh Mesh;
 			public Material Material;
+			public int SubMesh;
+		}
+		protected struct SubMeshKey
+		{
+			public Mesh Mesh;
+			public int SubMesh;
 		}
 		private readonly Dictionary<PrimKey, MeshId> _primOwner = new Dictionary<PrimKey, MeshId>();
-		private readonly Dictionary<Mesh, MeshPrimitive[]> _meshToPrims = new Dictionary<Mesh, MeshPrimitive[]>();
+		private readonly Dictionary<SubMeshKey, MeshPrimitive> _meshToPrims = new Dictionary<SubMeshKey, MeshPrimitive>();
 
 		// Settings
 		public static bool ExportNames = true;
@@ -505,13 +511,13 @@ namespace UnityGLTF
 					var smr = prim.GetComponent<SkinnedMeshRenderer>();
 					if (smr != null)
 					{
-						_primOwner[new PrimKey { Mesh = smr.sharedMesh, Material = smr.sharedMaterial }] = node.Mesh;
+						_primOwner[new PrimKey { Mesh = smr.sharedMesh, Material = smr.sharedMaterial, SubMesh = 0 }] = node.Mesh;
 					}
 					else
 					{
 						var filter = prim.GetComponent<MeshFilter>();
 						var renderer = prim.GetComponent<MeshRenderer>();
-						_primOwner[new PrimKey { Mesh = filter.sharedMesh, Material = renderer.sharedMaterial }] = node.Mesh;
+						_primOwner[new PrimKey { Mesh = filter.sharedMesh, Material = renderer.sharedMaterial, SubMesh = renderer.subMeshStartIndex }] = node.Mesh;
 					}
 				}
 			}
@@ -652,6 +658,7 @@ namespace UnityGLTF
 				{
 					key.Mesh = smr.sharedMesh;
 					key.Material = smr.sharedMaterial;
+					key.SubMesh = 0;
 				}
 				else
 				{
@@ -659,6 +666,7 @@ namespace UnityGLTF
 					var renderer = prim.GetComponent<MeshRenderer>();
 					key.Mesh = filter.sharedMesh;
 					key.Material = renderer.sharedMaterial;
+					key.SubMesh = renderer.subMeshStartIndex;
 				}
 
 				MeshId tempMeshId;
@@ -690,10 +698,10 @@ namespace UnityGLTF
 			mesh.Primitives = new List<MeshPrimitive>(primitives.Length);
 			foreach (var prim in primitives)
 			{
-				MeshPrimitive[] meshPrimitives = ExportPrimitive(prim, mesh);
+				MeshPrimitive meshPrimitives = ExportPrimitive(prim, mesh);
 				if (meshPrimitives != null)
 				{
-					mesh.Primitives.AddRange(meshPrimitives);
+					mesh.Primitives.Add(meshPrimitives);
 				}
 			}
 			
@@ -708,7 +716,7 @@ namespace UnityGLTF
 		}
 
 		// a mesh *might* decode to multiple prims if there are submeshes
-		private MeshPrimitive[] ExportPrimitive(GameObject gameObject, GLTFMesh mesh)
+		private MeshPrimitive ExportPrimitive(GameObject gameObject, GLTFMesh mesh)
 		{
 			Mesh meshObj = null;
 			SkinnedMeshRenderer smr = null;
@@ -729,24 +737,20 @@ namespace UnityGLTF
 			}
 
 			var renderer = gameObject.GetComponent<MeshRenderer>();
+			var submesh = renderer != null ? renderer.subMeshStartIndex : 0;
 			var materialsObj = renderer != null ? renderer.sharedMaterials : smr.sharedMaterials;
 
-			var prims = new MeshPrimitive[meshObj.subMeshCount];
-
 			// don't export any more accessors if this mesh is already exported
-			MeshPrimitive[] primVariations;
-			if (_meshToPrims.TryGetValue(meshObj, out primVariations)
-				&& meshObj.subMeshCount == primVariations.Length)
+			var subMeshKey = new SubMeshKey { Mesh = meshObj, SubMesh = submesh };
+			MeshPrimitive primVariation;
+			if (_meshToPrims.TryGetValue(subMeshKey, out primVariation))
 			{
-				for (var i = 0; i < primVariations.Length; i++)
+				MeshPrimitive prim = new MeshPrimitive(primVariation, _root);
+				if (materialsObj.Length > submesh)
 				{
-					prims[i] = new MeshPrimitive(primVariations[i], _root)
-					{
-						Material = ExportMaterial(materialsObj[i])
-					};
+					prim.Material = ExportMaterial(materialsObj[submesh]);
 				}
-
-				return prims;
+				return prim;
 			}
 
 			AccessorId aPosition = null, aNormal = null, aTangent = null,
@@ -771,7 +775,6 @@ namespace UnityGLTF
 
 			MaterialId lastMaterialId = null;
 
-			for (var submesh = 0; submesh < meshObj.subMeshCount; submesh++)
 			{
 				var primitive = new MeshPrimitive();
 
@@ -808,12 +811,10 @@ namespace UnityGLTF
 
 				ExportBlendShapes(smr, meshObj, primitive, mesh);
 
-				prims[submesh] = primitive;
+				_meshToPrims[subMeshKey] = primitive;
 			}
 
-			_meshToPrims[meshObj] = prims;
-
-			return prims;
+			return _meshToPrims[subMeshKey];
 		}
 
 		private MaterialId ExportMaterial(Material materialObj)
